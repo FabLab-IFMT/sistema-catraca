@@ -7,8 +7,8 @@
 const char* ssid = "Fabnet";
 const char* password = "71037523";
 
-// --- URL do servidor que hospeda o JSON ---
-const char* serverUrl = "http://192.168.1.103:8080/cards.json";  // Atualize com o IP do seu computador
+// --- URL do servidor Django ---
+const char* serverUrl = "http://192.168.1.103:8000/acesso_e_ponto/verificar_cartao/";  // Atualize com o IP do seu servidor Django
 
 // --- Pinos e configuração do sensor RFID ---
 #define RFID_RX_PIN 16
@@ -24,37 +24,43 @@ String lastCardProcessed = "";
 unsigned long lastProcessedTime = 0;
 const unsigned long processCooldown = 5000; // 5 segundos de cooldown
 
-// --- Função de verificação de autorização ---
+// --- Função de verificação de autorização diretamente no Django ---
 bool isCardAuthorized(const String &cardCode) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(serverUrl);
-    int httpCode = http.GET();
+    http.addHeader("Content-Type", "application/json");
 
-    if (httpCode > 0) {
-      if (httpCode == HTTP_CODE_OK) {
-        String payload = http.getString();
-        DynamicJsonDocument doc(1024);
-        DeserializationError error = deserializeJson(doc, payload);
-        if (error) {
-          Serial.print("Erro ao fazer parse do JSON: ");
-          Serial.println(error.c_str());
-          http.end();
-          return false;
-        }
-        JsonArray allowed_cards = doc["allowed_cards"].as<JsonArray>();
-        for (JsonVariant card : allowed_cards) {
-          if (card.as<String>() == cardCode) {
-            http.end();
-            return true;
-          }
-        }
+    // Criando JSON para enviar ao servidor
+    DynamicJsonDocument doc(200);
+    doc["card_number"] = cardCode;
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    int httpCode = http.POST(requestBody);
+
+    if (httpCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      DynamicJsonDocument responseDoc(200);
+      DeserializationError error = deserializeJson(responseDoc, response);
+
+      if (!error) {
+        bool authorized = responseDoc["authorized"];
+        String message = responseDoc["message"].as<String>();
+        Serial.print("Resposta do servidor: ");
+        Serial.println(message);
+        http.end();
+        return authorized;
+      } else {
+        Serial.println("Erro ao interpretar JSON de resposta");
       }
     } else {
-      Serial.print("Erro na requisição HTTP: ");
-      Serial.println(http.errorToString(httpCode));
+      Serial.printf("Erro HTTP: %d\n", httpCode);
+      Serial.println(http.getString());
     }
     http.end();
+  } else {
+    Serial.println("Erro: WiFi não conectado");
   }
   return false;
 }
@@ -117,7 +123,7 @@ void loop() {
           lastCardProcessed = cardCode;
           lastProcessedTime = currentTime;
           
-          // Verifica autorização e atua na catraca
+          // Verifica autorização no Django e atua na catraca
           if (isCardAuthorized(cardCode)) {
             grantAccess();
           } else {
